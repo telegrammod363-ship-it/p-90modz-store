@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SiteLinks — Folder to Link</title>
+<style>
+  :root{--bg:#000;--card:#0b0b0e;--line:#1c1c22;--text:#f2f3f5;--mute:#7b7f89;--a:#22d3ee;--b:#8b5cf6;--err:#ff5370;--ok:#34d399}
+  *{box-sizing:border-box}
+  html,body{background:var(--bg);color:var(--text);margin:0;font-family:Inter,system-ui,sans-serif}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(600px 300px at 80% -5%,rgba(139,92,246,.18),transparent),radial-gradient(500px 280px at 5% 0,rgba(34,211,238,.12),transparent)}
+  #app{position:relative;max-width:780px;margin:0 auto;padding:40px 16px 60px}
+  h1{font-size:1.9rem;margin:0 0 4px;letter-spacing:-.02em;background:linear-gradient(90deg,var(--a),var(--b));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--mute);margin:0 0 28px;font-size:.95rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;margin-bottom:18px}
+  .drop{display:block;cursor:default;border:1.5px dashed #2c2c35;border-radius:14px;padding:30px 16px;text-align:center;cursor:pointer;transition:.2s}
+  .drop:hover,.drop.on{border-color:var(--a);box-shadow:0 0 24px rgba(34,211,238,.15)}
+  .drop b{display:block;font-size:1.05rem;margin-bottom:4px}
+  .drop span{color:var(--mute);font-size:.85rem}
+  input[type=file]{display:none}
+  input[type=text]{flex:1;min-width:160px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#000;color:var(--text);font:.92rem ui-monospace,Menlo,monospace;outline:none}
+  input[type=text]:focus{border-color:var(--a)}
+  button{padding:10px 16px;border:1px solid var(--line);border-radius:10px;background:#121217;color:var(--text);cursor:pointer;font-size:.88rem;transition:.15s}
+  button:hover{border-color:#3a3a46}
+  button.primary{border:0;color:#000;font-weight:600;background:linear-gradient(90deg,var(--a),var(--b))}
+  button.primary:hover{box-shadow:0 0 22px rgba(139,92,246,.45)}
+  button.danger{color:var(--err)}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:14px}
+  .lbl{color:var(--mute);font-size:.85rem}
+  .msg{font-size:.85rem;margin-top:12px;min-height:1.2em}
+  .msg.err{color:var(--err)}.msg.ok{color:var(--ok)}
+  .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+  .count{color:var(--mute);font-size:.8rem}
+  .item{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:14px 0;border-top:1px solid var(--line)}
+  .info{flex:1;min-width:180px}
+  .info a{color:var(--a);text-decoration:none;font:.95rem ui-monospace,Menlo,monospace;word-break:break-all}
+  .info a:hover{text-decoration:underline}
+  .meta{color:var(--mute);font-size:.78rem;margin-top:3px}
+  .empty{color:var(--mute);font-size:.9rem;padding:14px 0}
+  .note{color:var(--mute);font-size:.78rem;line-height:1.5}
+  #viewer{position:fixed;inset:0;background:#fff;display:none}
+  #viewer iframe{width:100%;height:100%;border:0}
+  #nf{display:none;position:relative;text-align:center;padding:120px 16px}
+  #nf a{color:var(--a)}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <h1>SiteLinks</h1>
+  <p class="sub">Upload a website folder or a single HTML file. Get a unique, editable link.</p>
+
+  <div class="card">
+    <div class="drop" id="drop">
+      <b id="dropTitle">Choose a folder or a single file</b>
+      <span id="dropSub">Folder: must contain at least one .html file (CSS, JS, images and sub-folders included). File: .html / .htm only.</span>
+      <div class="row" style="justify-content:center">
+        <button type="button" id="pickFolder">Select folder</button>
+        <button type="button" id="pickFile">Select HTML file</button>
+      </div>
+    </div>
+    <input type="file" id="folder" webkitdirectory directory multiple>
+    <input type="file" id="file" accept=".html,.htm,text/html">
+    <div class="row">
+      <span class="lbl">Link name</span>
+      <input type="text" id="slug" placeholder="my-site" spellcheck="false">
+      <button class="primary" id="add">Create link</button>
+    </div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="card">
+    <div class="head"><strong>Your links</strong><span class="count" id="count"></span></div>
+    <div id="list"></div>
+  </div>
+  <p class="note">Sites are stored in this browser (IndexedDB). For links that work for other visitors, the files need to be hosted on a server.</p>
+</div>
+
+<div id="nf"><h2>Page not found</h2><p><a href="#/">Back to home</a></p></div>
+<div id="viewer"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let pending = null;
+let blobUrls = [];
+
+const dbp = new Promise((res, rej) => {
+  const r = indexedDB.open('sitelinks', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('sites', {keyPath: 'slug'});
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+async function tx(mode, fn){
+  const db = await dbp;
+  return new Promise((res, rej) => {
+    const t = db.transaction('sites', mode), q = fn(t.objectStore('sites'));
+    t.oncomplete = () => res(q && q.result);
+    t.onerror = () => rej(t.error);
+  });
+}
+const getAll = () => tx('readonly', s => s.getAll());
+const getOne = k => tx('readonly', s => s.get(k));
+const putOne = o => tx('readwrite', s => s.put(o));
+const delOne = k => tx('readwrite', s => s.delete(k));
+
+function say(t, c){ const m = $('msg'); m.textContent = t || ''; m.className = 'msg ' + (c || ''); }
+const clean = s => s.toLowerCase().trim().replace(/\.html?$/, '').replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+const linkOf = s => location.href.split('#')[0] + '#/' + s;
+const fmt = n => n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB';
+const isHtml = p => /\.html?$/i.test(p);
+
+async function validate(slug, except){
+  if(!slug) return 'Enter a link name (a-z, 0-9, -).';
+  if(slug !== clean(slug)) return 'Use only a-z, 0-9 and "-".';
+  if(slug !== except && await getOne(slug)) return 'This name is already taken.';
+  return '';
+}
+async function uniqueFrom(base){
+  let s = base || 'site', n = 2;
+  while(await getOne(s)) s = (base || 'site') + '-' + n++;
+  return s;
+}
+
+const DEF_TITLE = 'Choose a folder or a single file';
+const DEF_SUB = 'Folder: must contain at least one .html file (CSS, JS, images and sub-folders included). File: .html / .htm only.';
+$('pickFolder').onclick = () => $('folder').click();
+$('pickFile').onclick = () => $('file').click();
+
+async function setPending(name, files, label){
+  const htmls = files.filter(f => isHtml(f.path));
+  if(!htmls.length){ say('No .html file found.', 'err'); return false; }
+  const entry = (htmls.find(f => f.path.toLowerCase() === 'index.html') ||
+                 htmls.sort((a, b) => a.path.split('/').length - b.path.split('/').length)[0]).path;
+  const size = files.reduce((n, f) => n + f.blob.size, 0);
+  pending = {name, files, entry, size};
+  $('dropTitle').textContent = label;
+  $('dropSub').textContent = files.length + (files.length > 1 ? ' files' : ' file') + ' · ' + fmt(size) + ' · entry: ' + entry;
+  $('slug').value = await uniqueFrom(clean(name));
+  return true;
+}
+function resetDrop(){
+  pending = null; $('folder').value = ''; $('file').value = ''; $('slug').value = '';
+  $('dropTitle').textContent = DEF_TITLE; $('dropSub').textContent = DEF_SUB;
+}
+
+$('folder').addEventListener('change', async e => {
+  pending = null; say('');
+  const all = [...e.target.files];
+  if(!all.length) return;
+  $('file').value = '';
+  const root = all[0].webkitRelativePath.split('/')[0];
+  const files = all.map(f => ({path: f.webkitRelativePath.split('/').slice(1).join('/'), blob: f}))
+                   .filter(f => f.path && !f.path.split('/').some(p => p.startsWith('.')));
+  if(!await setPending(root, files, root + '/')){ resetDrop(); say('This folder has no .html file.', 'err'); }
+});
+
+$('file').addEventListener('change', async e => {
+  pending = null; say('');
+  const f = e.target.files[0];
+  if(!f) return;
+  $('folder').value = '';
+  if(!isHtml(f.name)){ resetDrop(); say('Only .html or .htm files are allowed.', 'err'); return; }
+  await setPending(f.name, [{path: f.name, blob: f}], f.name);
+});
+
+$('add').addEventListener('click', async () => {
+  if(!pending){ say('Choose a folder first.', 'err'); return; }
+  const slug = $('slug').value.trim().toLowerCase();
+  const err = await validate(slug);
+  if(err){ say(err, 'err'); return; }
+  try{
+    await putOne({slug, name: pending.name, entry: pending.entry, size: pending.size,
+      files: pending.files.map(f => ({path: f.path, blob: f.blob.slice(0, f.blob.size, f.blob.type)})), created: Date.now()});
+  }catch(e){ say('Could not save (storage full or blocked).', 'err'); return; }
+  resetDrop();
+  say('Link created.', 'ok');
+  render();
+});
+
+async function render(){
+  const sites = (await getAll()).sort((a, b) => b.created - a.created);
+  const list = $('list'); list.innerHTML = '';
+  $('count').textContent = sites.length ? sites.length + (sites.length > 1 ? ' links' : ' link') : '';
+  if(!sites.length){ list.innerHTML = '<div class="empty">No links yet.</div>'; return; }
+  sites.forEach(s => {
+    const d = document.createElement('div'); d.className = 'item';
+    d.innerHTML = '<div class="info"><a target="_blank"></a><div class="meta"></div></div>';
+    const a = d.querySelector('a'); a.href = linkOf(s.slug); a.textContent = '#/' + s.slug;
+    d.querySelector('.meta').textContent = (s.files.length > 1 ? s.name + '/' : s.name) + ' · ' + s.files.length + ' files · ' + fmt(s.size);
+    const mk = (t, c, fn) => { const b = document.createElement('button'); b.textContent = t; if(c) b.className = c; b.onclick = fn; d.appendChild(b); };
+    mk('Copy', '', () => navigator.clipboard.writeText(linkOf(s.slug)).then(() => say('Link copied.', 'ok')).catch(() => prompt('Copy link:', linkOf(s.slug))));
+    mk('Rename', '', async () => {
+      const n = (prompt('New link name:', s.slug) || '').trim().toLowerCase();
+      if(!n || n === s.slug) return;
+      const err = await validate(n, s.slug);
+      if(err){ alert(err); return; }
+      await delOne(s.slug); await putOne({...s, slug: n}); render();
+    });
+    mk('Delete', 'danger', async () => { if(confirm('Delete "' + s.slug + '"?')){ await delOne(s.slug); render(); } });
+    list.appendChild(d);
+  });
+}
+
+
+function resolve(base, ref){
+  if(!ref || /^(#|[a-z][a-z0-9+.-]*:|\/\/)/i.test(ref)) return null;
+  const dir = base.includes('/') ? base.replace(/[^/]*$/, '') : '';
+  try{
+    const p = new URL(ref, 'http://h/' + dir).pathname;
+    return decodeURIComponent(p).replace(/^\//, '');
+  }catch(e){ return null; }
+}
+const GUARD = `document.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href]');if(!a)return;var h=a.getAttribute('href');if(!h||h[0]=='#'||/^(mailto:|tel:|javascript:)/i.test(h))return;if(/^([a-z][a-z0-9+.-]*:)?\\/\\//i.test(h)){a.target='_blank';return;}e.preventDefault();parent.postMessage({__go:h},'*');},true);`;
+
+async function buildPage(site, path){
+  blobUrls.forEach(u => URL.revokeObjectURL(u)); blobUrls = [];
+  const map = {}, byPath = {};
+  site.files.forEach(f => byPath[f.path] = f);
+  const mkUrl = (blob, type) => { const u = URL.createObjectURL(type ? new Blob([blob], {type}) : blob); blobUrls.push(u); return u; };
+  const others = site.files.filter(f => !isHtml(f.path) && !/\.css$/i.test(f.path));
+  others.forEach(f => map[f.path] = mkUrl(f.blob));
+  for(const f of site.files.filter(f => /\.css$/i.test(f.path))){
+    let css = await f.blob.text();
+    css = css.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/g, (m, q, ref) => {
+      const r = resolve(f.path, ref.split(/[?#]/)[0]); return r && map[r] ? 'url("' + map[r] + '")' : m;
+    });
+    map[f.path] = mkUrl(css, 'text/css');
+  }
+  const doc = new DOMParser().parseFromString(await byPath[path].blob.text(), 'text/html');
+  doc.querySelectorAll('[src],[href],[poster]').forEach(el => {
+    if(el.tagName === 'A') return;
+    ['src', 'href', 'poster'].forEach(attr => {
+      if(!el.hasAttribute(attr)) return;
+      const r = resolve(path, el.getAttribute(attr).split(/[?#]/)[0]);
+      if(r && map[r]) el.setAttribute(attr, map[r]);
+    });
+  });
+  const sc = doc.createElement('script'); sc.textContent = GUARD;
+  doc.head.insertBefore(sc, doc.head.firstChild);
+  return '<!DOCTYPE html>' + doc.documentElement.outerHTML;
+}
+
+let current = null;
+async function show(site, path){
+  const v = $('viewer'); v.innerHTML = '';
+  const f = document.createElement('iframe');
+  f.setAttribute('sandbox', 'allow-scripts allow-forms allow-popups allow-modals');
+  f.srcdoc = await buildPage(site, path);
+  current = {site, path};
+  v.appendChild(f); v.style.display = 'block';
+}
+window.addEventListener('message', e => {
+  if(!current || !e.data || !e.data.__go) return;
+  const r = resolve(current.path, e.data.__go.split(/[?#]/)[0]);
+  const cand = r && [r, r + '.html', r.replace(/\/$/, '') + '/index.html'].find(p => current.site.files.some(f => f.path === p) && isHtml(p));
+  if(cand) show(current.site, cand);
+});
+
+async function route(){
+  const m = location.hash.match(/^#\/([^\/?#]+)/);
+  $('viewer').style.display = $('nf').style.display = 'none'; $('viewer').innerHTML = ''; current = null;
+  if(!m){ $('app').style.display = 'block'; render(); return; }
+  $('app').style.display = 'none';
+  const site = await getOne(decodeURIComponent(m[1]));
+  if(!site){ $('nf').style.display = 'block'; return; }
+  show(site, site.entry);
+}
+window.addEventListener('hashchange', route);
+route();
+</script>
+</body>
+</html>
